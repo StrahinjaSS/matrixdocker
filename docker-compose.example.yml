@@ -1,0 +1,131 @@
+version: '3.5'
+
+services:
+  app:
+    build:
+      context: docker
+      dockerfile: Dockerfile
+    image: build_app:latest
+    restart: always
+    working_dir: /home/www-data/app
+    networks:
+      - network
+      - outside_world
+    volumes:
+      - .:/home/www-data/app
+      - ./docker/php/php-file-upload.ini:/usr/local/etc/php/conf.d/php-file-upload.ini
+
+  web:
+    image: nginx:alpine
+    restart: always
+    working_dir: /home/www-data/app
+    networks:
+      - network
+      - outside_world
+    depends_on:
+      - app
+    volumes:
+      - .:/home/www-data/app
+      - ./docker/nginx:/etc/nginx/conf.d
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.services.laravel-https.loadbalancer.healthcheck.path=/"
+      - "traefik.http.services.laravel-https.loadbalancer.healthcheck.interval=765s"
+      - "traefik.http.services.laravel-https.loadbalancer.healthcheck.timeout=10s"
+
+  traefik:
+    image: traefik:2.0
+    restart: always
+    networks:
+      - network
+      - outside_world
+    ports:
+      - 80:80
+      - 443:443
+    depends_on:
+      - web
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker/traefik/traefik-prod.yml:/etc/traefik/traefik.yml
+      - ./docker/traefik/.htpasswd:/etc/traefik/.htpasswd
+      - ./docker/traefik/acme.json:/etc/traefik/acme.json
+
+  mysql:
+    image: mysql:5.7
+    restart: always
+    ports:
+      - 3306:3306
+    volumes:
+      - ./docker/mysql:/docker-entrypoint-initdb.d/
+      - ./bondsandshares_db:/var/lib/mysql/
+    depends_on:
+      - app
+    networks:
+      - network
+      - outside_world
+    environment:
+      MYSQL_ROOT_PASSWORD: "..."
+      MYSQL_DATABASE: ...
+      MYSQL_USER: ...
+      MYSQL_PASSWORD: "..."
+
+  transactions_worker:
+    build:
+      context: docker/workers
+      dockerfile: Dockerfile
+    working_dir: /home/www-data/app
+    restart: on-failure
+    volumes:
+      - .:/home/www-data/app
+    networks:
+      - network
+      - outside_world
+    environment:
+      CONTAINER_ROLE: queue
+      QUEUE_NAME: transactions
+    depends_on:
+      - app
+      - mysql
+
+  emails_worker:
+    build:
+      context: docker/workers
+      dockerfile: Dockerfile
+    working_dir: /home/www-data/app
+    restart: on-failure
+    volumes:
+      - .:/home/www-data/app
+    networks:
+      - network
+      - outside_world
+    environment:
+      CONTAINER_ROLE: queue
+      QUEUE_NAME: emails
+    depends_on:
+      - app
+      - mysql
+
+  scheduler:
+    build:
+      context: docker/workers
+      dockerfile: Dockerfile
+    working_dir: /home/www-data/app
+    restart: on-failure
+    volumes:
+      - .:/home/www-data/app
+    networks:
+      - network
+      - outside_world
+    environment:
+      CONTAINER_ROLE: scheduler
+    depends_on:
+      - app
+      - mysql
+      - emails_worker
+      - transactions_worker
+networks:
+  network:
+    internal: true
+  outside_world:
+    external:
+      name: outside_world
